@@ -367,6 +367,27 @@ if sync_btn:
 
 # --- 5. 主畫面展示 ---
 if global_stats and "nav_mode" in st.session_state:
+    st.markdown("""
+    <style>
+    div[data-testid="stExpander"] {
+        border: none !important;
+        box-shadow: none !important;
+        background: transparent !important;
+    }
+    
+    div[data-testid="stExpander"] details {
+        border: none !important;
+        box-shadow: none !important;
+        background: transparent !important;
+        padding: 0 !important;
+    }
+    
+    div[data-testid="stExpander"] summary {
+        padding-left: 0 !important;
+        padding-right: 0 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     with st.expander("📈 Summary", expanded=False):
         sc, fc = st.columns(2)
         with sc:
@@ -377,7 +398,6 @@ if global_stats and "nav_mode" in st.session_state:
             st.markdown("#### 🧜‍♀️ Free Diving")
             c1, c2, c3 = st.columns(3)
             c1.metric("次數", f"{global_stats['Free Diving']['count']} 次"); c2.metric("總時長", format_duration(global_stats['Free Diving']['total_sec'])); c3.metric("最大深度", f"{global_stats['Free Diving']['max_depth']:.1f} m")
-    st.divider()
 
     curr_list = flat_logs[st.session_state.nav_mode]
     idx = next((i for i, l in enumerate(curr_list) if l["date"] == st.session_state.nav_date and l["time"] == st.session_state.nav_time), 0)
