@@ -231,7 +231,7 @@ if db_index:
     st.sidebar.markdown("**• 下潛時間**")
     
     # 🚀 修復 InvalidHeightError: 如果數量少，完全不傳入 height 參數
-    t_cont = st.sidebar.container(height=200, border=False)
+    t_cont = st.sidebar.container(height=250, border=False)
 
     with t_cont:
         st.markdown('<div class="time-mask"></div>', unsafe_allow_html=True)
@@ -247,7 +247,7 @@ if db_index:
         const m = window.parent.document.querySelector('.time-mask');
         if(m){{let c=m.closest('div[data-testid="stVerticalBlock"]'); if(c){{c.style.WebkitMaskImage='linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)'; c.style.paddingBottom='20px';}}}}
     }},150);</script>"""
-    st.sidebar.html(js,unsafe_allow_javascript=True)
+    st.sidebar.html(js, unsafe_allow_javascript=True)
 
 st.sidebar.header("🔄 資料同步")
 sync_clicked = st.sidebar.button("從手錶連線並同步", use_container_width=True, type="primary")
