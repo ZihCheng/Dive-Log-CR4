@@ -265,18 +265,93 @@ if db_index:
     st.sidebar.write(""); st.sidebar.markdown("**• 下潛時間**")
     t_cont = st.sidebar.container(height=200, border=False)
     with t_cont:
-        st.markdown('<div class="time-mask"></div>', unsafe_allow_html=True)
+        st.markdown('<div id="time-nav-anchor" class="time-mask"></div>', unsafe_allow_html=True)
         for t in available_times:
             b_type = "primary" if st.session_state.nav_time == t else "secondary"
-            st.button(f"⏱️ {t}", key=f"s_{t}", type=b_type, use_container_width=True, on_click=set_time, args=(t,))
-    js = f"""<script>setTimeout(()=>{{
-        const target = "⏱️ {st.session_state.nav_time}";
-        const btns = window.parent.document.querySelectorAll('[data-testid="stSidebar"] button');
-        for (let b of btns) {{ if (b.innerText.includes(target)) {{ b.scrollIntoView({{behavior:'smooth', block:'center'}}); break; }} }}
-        const m = window.parent.document.querySelector('.time-mask');
-        if(m){{let c=m.closest('div[data-testid="stVerticalBlock"]'); if(c){{c.style.WebkitMaskImage='linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)'; c.style.paddingBottom='20px';}}}}
-    }},150);</script>"""
-    with st.sidebar: st.html(js, unsafe_allow_javascript=True, width="content")
+            st.button(
+                f"⏱️ {t}",
+                key=f"s_{t}",
+                type=b_type,
+                use_container_width=True,
+                on_click=set_time,
+                args=(t,)
+            )
+    js = f"""
+    <script>
+    (() => {{
+      const target = "⏱️ {st.session_state.nav_time}";
+      const FLAG = "__time_nav_scroll_running__";
+    
+      if (window[FLAG]) return;
+      window[FLAG] = true;
+    
+      function applyMaskAndScroll() {{
+        const root = document;
+    
+        const anchor = root.getElementById("time-nav-anchor");
+        if (!anchor) return false;
+    
+        // 找到包住時間按鈕的區塊
+        const block = anchor.closest('div[data-testid="stVerticalBlock"]');
+        if (!block) return false;
+    
+        // 套遮罩效果
+        block.style.WebkitMaskImage =
+          "linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)";
+        block.style.maskImage =
+          "linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)";
+        block.style.paddingBottom = "20px";
+    
+        // 只在這個 block 內找時間按鈕，不掃整個 sidebar
+        const btns = block.querySelectorAll("button");
+        for (const b of btns) {{
+          const txt = (b.innerText || "").trim();
+          if (txt.includes(target)) {{
+            b.scrollIntoView({{
+              behavior: "smooth",
+              block: "center",
+              inline: "nearest"
+            }});
+            return true;
+          }}
+        }}
+    
+        return false;
+      }}
+    
+      let tries = 0;
+      const maxTries = 50;
+    
+      const timer = setInterval(() => {{
+        tries += 1;
+        const ok = applyMaskAndScroll();
+    
+        if (ok || tries >= maxTries) {{
+          clearInterval(timer);
+          window[FLAG] = false;
+        }}
+      }}, 200);
+    
+      // 額外監聽 sidebar 內容變動，讓 rerun / layout 更新後還能補捲動
+      const sidebar = document.querySelector('[data-testid="stSidebar"]');
+      if (sidebar) {{
+        const observer = new MutationObserver(() => {{
+          applyMaskAndScroll();
+        }});
+    
+        observer.observe(sidebar, {{
+          childList: true,
+          subtree: true
+        }});
+    
+        // 8 秒後自動關閉 observer，避免長期掛著
+        setTimeout(() => observer.disconnect(), 8000);
+      }}
+    }})();
+    </script>
+    """
+    with st.sidebar:
+        st.html(js, unsafe_allow_javascript=True, width="content")
 
 st.sidebar.header("🔄 資料同步")
 sync_btn = st.sidebar.button("從手錶連線並同步", use_container_width=True, type="primary")
@@ -292,6 +367,7 @@ if sync_btn:
 
 # --- 5. 主畫面展示 ---
 if global_stats and "nav_mode" in st.session_state:
+    st.title("🤿 潛水生涯大數據分析", anchor=False)
     sc, fc = st.columns(2)
     with sc:
         st.markdown("#### 🐠 Scuba Diving")
