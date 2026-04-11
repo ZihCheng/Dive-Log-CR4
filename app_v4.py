@@ -3,58 +3,60 @@ import json
 import os
 import asyncio
 import base64
-# 只有在本機環境且有藍牙硬體時，bleak 才會成功運作
-try:
-    from bleak import BleakClient
-    HAS_BLE = True
-except Exception:
-    HAS_BLE = False
-
+from bleak import BleakClient
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# --- 1. Firebase 初始化 (修正雲端讀取邏輯) ---
-if not firebase_admin._apps:
-    try:
-        if os.path.exists("firebase_key.json"):
-            # A. 本機測試模式：讀取檔案
-            cred = credentials.Certificate("firebase_key.json")
-        else:
-            # B. 雲端部署模式：從 Streamlit Secrets 讀取 (這解決了截圖中的 FileNotFoundError)
-            fb_secrets = dict(st.secrets["firebase_service_account"])
-            cred = credentials.Certificate(fb_secrets)
-        firebase_admin.initialize_app(cred)
-    except Exception as e:
-        st.error(f"❌ Firebase 初始化失敗：{str(e)}")
-        st.stop()
-
-db = firestore.client()
-COLLECTION_NAME = "dive_logs"
-
-# --- 2. 網頁 CSS 魔法 (海洋藍 & 介面優化) ---
+# --- 1. 網頁基本設定與 CSS 魔法 ---
 st.set_page_config(page_title="DiveLog Pro Dashboard", page_icon="🤿", layout="wide")
+
 st.markdown("""
 <style>
+/* --- 介面優化 --- */
 [data-testid="stMetricValue"] div { font-size: 1.6rem !important; }
 [data-testid="stMetricLabel"] p { font-size: 0.95rem !important; color: #555555 !important; }
 div[data-baseweb="select"] > div { cursor: pointer !important; }
 div[data-baseweb="select"] input { caret-color: transparent !important; cursor: pointer !important; }
 .aria-hidden, a.header-anchor, [data-testid="stHeaderActionElements"] { display: none !important; }
-[data-testid="column"]:nth-child(1) button, [data-testid="column"]:nth-child(3) button {
-    opacity: 0.1; transition: all 0.3s ease; border: none !important; background: transparent; font-size: 1.5rem;
+
+/* === 🚀 隱形導航按鈕 === */
+[data-testid="column"]:nth-child(1) button, 
+[data-testid="column"]:nth-child(3) button {
+    opacity: 0.1; transition: all 0.3s ease-in-out;
+    border: none !important; background-color: transparent !important;
+    font-size: 1.5rem !important; padding: 0 !important;
 }
-[data-testid="column"]:nth-child(1) button:hover, [data-testid="column"]:nth-child(3) button:hover {
+[data-testid="column"]:nth-child(1) button:hover, 
+[data-testid="column"]:nth-child(3) button:hover {
     opacity: 1; transform: scale(1.2); color: #FF4B4B !important; 
 }
-/* 🎨 選中的時間按鈕顏色 */
+
+/* === 🎨 更改選中時間的按鈕顏色 === */
 div[data-testid="stVerticalBlock"]:has(.time-mask) button[kind="primary"] {
-    background-color: #0083B8 !important; border-color: #0083B8 !important; color: white !important;
+    background-color: #0083B8 !important;
+    border-color: #0083B8 !important;
+    color: white !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# === 📡 藍牙同步核心邏輯 (與同步到 Firebase) ===
+# === 📡 Firebase 初始化 (雲端/本機通用) ===
+# ==========================================
+if not firebase_admin._apps:
+    if os.path.exists("firebase_key.json"):
+        cred = credentials.Certificate("firebase_key.json")
+    else:
+        # 準備為之後部署到 Streamlit Cloud 預留的 Secrets 讀取通道
+        fb_dict = dict(st.secrets["firebase_service_account"])
+        cred = credentials.Certificate(fb_dict)
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
+COLLECTION_NAME = "dive_logs"
+
+# ==========================================
+# === 📡 藍牙直接上雲端同步邏輯 ===
 # ==========================================
 TARGET_ADDRESS = "AC8C7051-E92A-EE9C-4D84-B5B64389EE53"
 FFE1_UUID = "f000ffe1-ab12-45ec-84c8-46483f4626e9"
@@ -68,71 +70,88 @@ def make_profile_cmd(start_addr: int, length: int) -> bytes:
                   start_addr & 0xFF, (start_addr >> 8) & 0xFF, (start_addr >> 16) & 0xFF, (start_addr >> 24) & 0xFF])
     return body + bytes([(~(sum(body) & 0xFF)) & 0xFF])
 
-async def sync_from_watch(status_placeholder):
-    if not HAS_BLE: return False, "此環境不支援藍牙同步，請在本機電腦執行。"
-    st.session_state.bt_session = {"header": None, "profile": bytearray(), "event": asyncio.Event()}
-    
-    def handler(s, d):
-        pkt = bytes(d)
-        if pkt.startswith(b'\xc1\x02'):
-            st.session_state.bt_session["header"] = pkt
-            st.session_state.bt_session["event"].set()
-        elif pkt.startswith(b'\xc1\x03') or len(pkt) > 10:
-            content = pkt[4:-1] if pkt.startswith(b'\xc1\x03') else pkt
-            st.session_state.bt_session["profile"].extend(content)
-            st.session_state.bt_session["event"].set()
+def parse_header_for_addr(packet: bytes):
+    if len(packet) < 161: return None
+    p = packet[4:-1]
+    idx, l = int.from_bytes(p[0:4], "little"), int.from_bytes(p[8:12], "little")
+    if idx == 0 or idx == 4294967295 or l == 4294967295: return None
+    return int.from_bytes(p[40:44], "little"), l
 
+def bt_notification_handler(sender, data):
+    pkt = bytes(data)
+    if pkt.startswith(b'\xc1\x02'):
+        st.session_state.bt_session["header"] = pkt
+        st.session_state.bt_session["event"].set()
+    elif pkt.startswith(b'\xc1\x03') or len(pkt) > 10:
+        content = pkt[4:-1] if pkt.startswith(b'\xc1\x03') else pkt
+        st.session_state.bt_session["profile"].extend(content)
+        st.session_state.bt_session["event"].set()
+
+async def sync_from_watch(status_placeholder):
+    # 🚀 徹底拔除 os.makedirs("divelogs")，不再建立本地資料夾
+    st.session_state.bt_session = {"header": None, "profile": bytearray(), "event": asyncio.Event()}
     try:
         async with BleakClient(TARGET_ADDRESS) as client:
-            status_placeholder.info("🔗 藍牙連線成功！正在比對雲端日誌...")
-            await client.start_notify(FFE1_UUID, handler)
+            status_placeholder.info("🔗 藍牙已連線！正在比對雲端日誌...")
+            await client.start_notify(FFE1_UUID, bt_notification_handler)
             await asyncio.sleep(1.0)
             
-            exist_ids = [doc.id for doc in db.collection(COLLECTION_NAME).stream()]
-            idx, empty, new_count = 1, 0, 0
+            # 🚀 從 Firebase 取得現有日誌 ID，用來判斷哪些不需要下載
+            existing_ids = [doc.id for doc in db.collection(COLLECTION_NAME).stream()]
+            
+            dive_index, empty_count, new_count = 1, 0, 0
             while True:
-                doc_id = f"dive_{idx:03d}"
-                if doc_id in exist_ids: idx += 1; continue
+                doc_id = f"dive_{dive_index:03d}"
+                # 如果 Firebase 已經有這筆紀錄，直接跳過
+                if doc_id in existing_ids: 
+                    dive_index += 1; continue
                 
-                status_placeholder.warning(f"🔍 檢查手錶第 {idx} 潛...")
+                status_placeholder.warning(f"🔍 檢查手錶第 {dive_index} 潛...")
                 st.session_state.bt_session["header"] = None
                 st.session_state.bt_session["event"].clear()
-                await client.write_gatt_char(FFE1_UUID, make_header_cmd(idx), response=False)
+                await client.write_gatt_char(FFE1_UUID, make_header_cmd(dive_index), response=False)
                 
-                try: await asyncio.wait_for(st.session_state.bt_session["event"].wait(), timeout=3.0)
-                except: empty += 1
-                if empty >= 3: break
+                try:
+                    await asyncio.wait_for(st.session_state.bt_session["event"].wait(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    empty_count += 1
+                    if empty_count >= 3: break
+                    dive_index += 1; continue
                 
-                header = st.session_state.bt_session["header"]
-                if not header: break
-                p = header[4:-1]
-                l = int.from_bytes(p[8:12], "little")
-                addr = int.from_bytes(p[40:44], "little")
+                addr_info = parse_header_for_addr(st.session_state.bt_session["header"])
+                if not addr_info: break
                 
-                if l > 0:
-                    status_placeholder.warning(f"📥 下載並上傳第 {idx} 潛...")
-                    st.session_state.bt_session["profile"].clear()
-                    offset = 0
-                    while offset < l:
+                st.session_state.bt_session["profile"].clear()
+                offset, profile_len = 0, addr_info[1]
+                if profile_len > 0:
+                    status_placeholder.warning(f"📥 正在下載並上傳第 {dive_index} 潛至 Firebase...")
+                    while offset < profile_len:
                         st.session_state.bt_session["event"].clear()
-                        await client.write_gatt_char(FFE1_UUID, make_profile_cmd(addr + offset, 128), response=False)
-                        try: await asyncio.wait_for(st.session_state.bt_session["event"].wait(), timeout=2.5)
-                        except: continue
-                        offset += 128
-                        await asyncio.sleep(0.1)
+                        await client.write_gatt_char(FFE1_UUID, make_profile_cmd(addr_info[0] + offset, 128), response=False)
+                        try:
+                            await asyncio.wait_for(st.session_state.bt_session["event"].wait(), timeout=3.0)
+                        except asyncio.TimeoutError: continue
+                        offset += 128; await asyncio.sleep(0.15)
                     
-                    # 🚀 直接寫入 Firebase (100% 無本地暫存檔案)
-                    db.collection(COLLECTION_NAME).document(doc_id).set({
-                        "header_hex": header.hex(),
-                        "profile_hex_list": [st.session_state.bt_session["profile"][:l].hex()],
+                    # 🚀 將資料直接寫入 Firebase，不再呼叫 json.dump 存本地檔案
+                    final_hex = st.session_state.bt_session["profile"][:profile_len].hex()
+                    log_data = {
+                        "header_hex": st.session_state.bt_session["header"].hex(),
+                        "profile_hex_list": [final_hex],
                         "sync_time": firestore.SERVER_TIMESTAMP
-                    })
+                    }
+                    db.collection(COLLECTION_NAME).document(doc_id).set(log_data)
                     new_count += 1
-                idx += 1; empty = 0
-            return True, new_count
-    except Exception as e: return False, str(e)
+                    
+                dive_index += 1; empty_count = 0
+                
+            await client.stop_notify(FFE1_UUID); return True, new_count
+    except Exception as e:
+        msg = str(e)
+        if "not found" in msg.lower(): return False, "找不到手錶，請確認藍牙已開啟。"
+        return False, f"連線異常: {msg}"
 
-# --- 3. 解析與資料載入 ---
+# --- 2. 解析工具與純雲端資料載入 ---
 def format_duration(total_sec):
     h, m, s = int(total_sec//3600), int((total_sec%3600)//60), int(total_sec%60)
     return f"{h} 小時 {m} 分" if h > 0 else f"{m} 分 {s} 秒" if m > 0 else f"{s} 秒"
@@ -140,40 +159,49 @@ def format_duration(total_sec):
 def parse_header(payload_hex):
     p = bytes.fromhex(payload_hex)[4:-1]
     mode = "Scuba Diving" if p[4] == 0 else "Free Diving" if p[4] == 2 else "Gauge Mode"
+    date_str, time_str = f"20{p[12]:02d}-{p[13]:02d}-{p[14]:02d}", f"{p[15]:02d}:{p[16]:02d}"
+    itv = max(1, int.from_bytes(p[24:28], "little"))
     depth = (int.from_bytes(p[28:32], "little") - 1000) / 100.0
-    return {"mode": mode, "date": f"20{p[12]:02d}-{p[13]:02d}-{p[14]:02d}", "time": f"{p[15]:02d}:{p[16]:02d}", 
-            "sampling_rate": max(1, int.from_bytes(p[24:28], "little")), "max_depth": depth, "cns_max": p[76]}
+    return {"mode": mode, "date": date_str, "time": time_str, "sampling_rate": itv, "max_depth": depth, "cns_max": p[76]}
 
-@st.cache_data(show_spinner=False)
-def load_data():
-    docs = db.collection(COLLECTION_NAME).stream()
+# 🚀 100% 依賴 Firebase 的讀取機制
+@st.cache_data(show_spinner="從雲端載入數據...")
+def load_all_data_from_cloud():
     stats = {"Scuba Diving": {"count": 0, "total_sec": 0, "max_depth": 0.0}, "Free Diving": {"count": 0, "total_sec": 0, "max_depth": 0.0}}
-    idx_db, flat, mode_cnt, all_logs = {}, {"Scuba Diving":[], "Free Diving":[], "Gauge Mode":[]}, {"Scuba Diving":0, "Free Diving":0, "Gauge Mode":0}, []
+    all_logs = []
     
-    for d in docs:
-        raw_data = d.to_dict()
-        info = parse_header(raw_data["header_hex"])
-        all_logs.append({"filename": d.id, "header_hex": raw_data["header_hex"], **info, "profile_hex_list": raw_data.get("profile_hex_list", [])})
-    
+    docs = db.collection(COLLECTION_NAME).stream()
+    for doc in docs:
+        data = doc.to_dict()
+        info = parse_header(data["header_hex"])
+        all_logs.append({
+            "filename": doc.id, 
+            "header_hex": data["header_hex"], 
+            **info, 
+            "profile_hex_list": data.get("profile_hex_list", [])
+        })
+        
     if not all_logs: return None, None, None
-    all_logs.sort(key=lambda x: (x["date"], x["time"]))
     
-    for l in all_logs:
-        m, d, t = l["mode"], l["date"], l["time"]
-        mode_cnt[m] += 1
-        if m not in idx_db: idx_db[m] = {}
-        if d not in idx_db[m]: idx_db[m][d] = {}
-        idx_db[m][d][t] = {"fname": l["filename"], "num": mode_cnt[m]}
-        flat[m].append({"date": d, "time": t, "num": mode_cnt[m], "cloud_data": l})
+    all_logs.sort(key=lambda x: (x["date"], x["time"]))
+    db_index, flat_logs, mode_counters = {}, {"Scuba Diving":[], "Free Diving":[], "Gauge Mode":[]}, {"Scuba Diving":0, "Free Diving":0, "Gauge Mode":0}
+    
+    for log in all_logs:
+        m, d, t = log["mode"], log["date"], log["time"]
+        mode_counters[m] += 1
+        if m not in db_index: db_index[m] = {}
+        if d not in db_index[m]: db_index[m][d] = {}
+        db_index[m][d][t] = {"fname": log["filename"], "num": mode_counters[m]}
+        # 把整包 Firebase 讀下來的 log 塞進 cloud_data 供後續使用
+        flat_logs[m].append({"date": d, "time": t, "num": mode_counters[m], "cloud_data": log})
         if m in stats:
             stats[m]["count"] += 1
-            itv = 0.5 if "Free" in m else l["sampling_rate"]
-            stats[m]["total_sec"] += max(0, sum(len(h) for h in l["profile_hex_list"]) // 2 - 2) // 6 * itv
-            stats[m]["max_depth"] = max(stats[m]["max_depth"], l["max_depth"])
-    return stats, idx_db, flat
+            itv = 0.5 if "Free" in m else log["sampling_rate"]
+            stats[m]["total_sec"] += max(0, sum(len(h) for h in log["profile_hex_list"]) // 2 - 2) // 6 * itv
+            stats[m]["max_depth"] = max(stats[m]["max_depth"], log["max_depth"])
+    return stats, db_index, flat_logs
 
-# D3 圖表 (解決 &deg;C 筆字問題)
-def d3_plot(profile_data, is_free):
+def d3_interactive_plot(profile_data, is_free):
     chart_data = json.dumps(profile_data)
     time_key = "sec" if is_free else "min"
     return f"""
@@ -202,7 +230,7 @@ def d3_plot(profile_data, is_free):
     </script></body></html>
     """
 
-# --- 4. 側邊欄 ---
+# --- 3. 狀態管理 Callback ---
 def on_mode_change():
     m = st.session_state.nav_mode
     if m in db_index:
@@ -214,8 +242,15 @@ def on_date_change():
     if m in db_index and d in db_index[m]:
         st.session_state.nav_time = sorted(list(db_index[m][d].keys()))[0]
 
-data_res = load_data()
-global_stats, db_index, flat_logs = data_res if data_res else (None, None, None)
+def navigate_to(date, time):
+    st.session_state.nav_date, st.session_state.nav_time = date, time
+
+def set_time(t):
+    st.session_state.nav_time = t
+
+# --- 4. 側邊欄：導航與連線同步 ---
+# 🚀 全面採用從 Firebase 讀取的方法
+global_stats, db_index, flat_logs = load_all_data_from_cloud()
 
 st.sidebar.header("📅 尋找日誌")
 if db_index:
@@ -224,22 +259,16 @@ if db_index:
         st.session_state.nav_mode = modes[0]
         st.session_state.nav_date = sorted(list(db_index[modes[0]].keys()), reverse=True)[0]
         st.session_state.nav_time = sorted(list(db_index[modes[0]][st.session_state.nav_date].keys()))[0]
-    
     st.sidebar.selectbox("• 模式", modes, key="nav_mode", on_change=on_mode_change)
     st.sidebar.selectbox("• 日期", sorted(list(db_index[st.session_state.nav_mode].keys()), reverse=True), key="nav_date", on_change=on_date_change)
     available_times = sorted(list(db_index[st.session_state.nav_mode][st.session_state.nav_date].keys()))
-    st.sidebar.markdown("**• 下潛時間**")
-    
-    # 🚀 修復 InvalidHeightError: 如果數量少，完全不傳入 height 參數
-    t_cont = st.sidebar.container(height=250, border=False)
-
+    st.sidebar.write(""); st.sidebar.markdown("**• 下潛時間**")
+    t_cont = st.sidebar.container(height=250 if len(available_times) > 4 else None, border=False)
     with t_cont:
         st.markdown('<div class="time-mask"></div>', unsafe_allow_html=True)
         for t in available_times:
             b_type = "primary" if st.session_state.nav_time == t else "secondary"
-            if st.button(f"⏱️ {t}", key=f"s_{t}", type=b_type, use_container_width=True): 
-                st.session_state.nav_time = t; st.rerun()
-    
+            st.button(f"⏱️ {t}", key=f"s_{t}", type=b_type, use_container_width=True, on_click=set_time, args=(t,))
     js = f"""<script>setTimeout(()=>{{
         const target = "⏱️ {st.session_state.nav_time}";
         const btns = window.parent.document.querySelectorAll('[data-testid="stSidebar"] button');
@@ -247,21 +276,21 @@ if db_index:
         const m = window.parent.document.querySelector('.time-mask');
         if(m){{let c=m.closest('div[data-testid="stVerticalBlock"]'); if(c){{c.style.WebkitMaskImage='linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)'; c.style.paddingBottom='20px';}}}}
     }},150);</script>"""
-    st.sidebar.html(js, unsafe_allow_javascript=True)
+    with st.sidebar: st.html(js, unsafe_allow_javascript=True, width="content")
 
 st.sidebar.header("🔄 資料同步")
-sync_clicked = st.sidebar.button("從手錶連線並同步", use_container_width=True, type="primary")
-msg_area = st.sidebar.container()
+sync_btn = st.sidebar.button("從手錶連線並同步", use_container_width=True, type="primary")
+msg_cont = st.sidebar.container()
 if "sync_msg" in st.session_state:
-    msg_area.success(st.session_state.sync_msg); del st.session_state.sync_msg
-if sync_clicked:
-    with msg_area:
-        stat = st.empty()
-        ok, res = asyncio.run(sync_from_watch(stat))
-        if ok: st.session_state.sync_msg = f"✅ 完成！雲端新增 {res} 筆。"; st.cache_data.clear(); st.rerun()
-        else: stat.empty(); st.error(res)
+    msg_cont.success(st.session_state.sync_msg); del st.session_state.sync_msg
+if sync_btn:
+    with msg_cont:
+        status = st.empty()
+        ok, res = asyncio.run(sync_from_watch(status))
+        if ok: st.session_state.sync_msg = f"✅ 完成！雲端已新增 {res} 筆。"; st.cache_data.clear(); st.rerun()
+        else: status.empty(); st.error(res)
 
-# --- 5. 主畫面展現 ---
+# --- 5. 主畫面展示 ---
 if global_stats and "nav_mode" in st.session_state:
     st.title("🤿 潛水生涯大數據分析", anchor=False)
     sc, fc = st.columns(2)
@@ -279,28 +308,25 @@ if global_stats and "nav_mode" in st.session_state:
     idx = next((i for i, l in enumerate(curr_list) if l["date"] == st.session_state.nav_date and l["time"] == st.session_state.nav_time), 0)
     nav1, nav2, nav3 = st.columns([1, 8, 1])
     with nav1:
-        if idx > 0:
-            p = curr_list[idx-1]
-            st.button("◀", key="prev", type="tertiary", use_container_width=True, on_click=lambda d=p["date"], t=p["time"]: st.session_state.update({"nav_date": d, "nav_time": t}))
+        if idx > 0: st.button("◀", key="prev", type="tertiary", use_container_width=True, on_click=navigate_to, args=(curr_list[idx-1]["date"], curr_list[idx-1]["time"]))
     with nav2:
         e = db_index[st.session_state.nav_mode][st.session_state.nav_date][st.session_state.nav_time]
         st.markdown(f"<h3 style='text-align: center; margin-top: 0;'>📊 {st.session_state.nav_mode} #{e['num']} | {st.session_state.nav_date} {st.session_state.nav_time}</h3>", unsafe_allow_html=True)
     with nav3:
-        if idx < len(curr_list)-1:
-            n = curr_list[idx+1]
-            st.button("▶", key="next", type="tertiary", use_container_width=True, on_click=lambda d=n["date"], t=n["time"]: st.session_state.update({"nav_date": d, "nav_time": t}))
+        if idx < len(curr_list)-1: st.button("▶", key="next", type="tertiary", use_container_width=True, on_click=navigate_to, args=(curr_list[idx+1]["date"], curr_list[idx+1]["time"]))
 
+    # 🚀 直接從雲端資料字典提取內容，完全不依賴 open() 開啟本地檔案
     log_entry = curr_list[idx]["cloud_data"]
     info = parse_header(log_entry["header_hex"])
-    raw_b = b"".join(bytes.fromhex(h) for h in log_entry["profile_hex_list"])[2:]
+    raw_bytes = b"".join(bytes.fromhex(h) for h in log_entry["profile_hex_list"])[2:]
     p_data, sec, marker, itv = [], 0.0, None, (0.5 if "Free" in st.session_state.nav_mode else info["sampling_rate"])
-    while len(raw_b) >= 6:
-        chunk = raw_b[:6]; raw_b = raw_b[1:]
+    while len(raw_bytes) >= 6:
+        chunk = raw_bytes[:6]; raw_bytes = raw_bytes[1:]
         if marker is None or chunk[0] in [marker, (marker-1)%256]:
             d_r, t_r = int.from_bytes(chunk[1:3],"little"), int.from_bytes(chunk[3:5],"little")
             if 100 <= t_r <= 450 and 900 <= d_r <= 16000:
                 marker = chunk[0]; p_data.append({"sec":sec, "min":round(sec/60,1), "depth":(d_r-1000)/100.0, "temp":t_r/10.0})
-                sec += itv; raw_b = raw_b[5:]
+                sec += itv; raw_bytes = raw_bytes[5:]
     
     if p_data:
         depths = [d['depth'] for d in p_data]
@@ -311,7 +337,7 @@ if global_stats and "nav_mode" in st.session_state:
         else:
             m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("潛水時長", format_duration(dive_time)); m2.metric("最大深度", f"{max_d:.1f} m"); m3.metric("平均深度", f"{sum(depths)/len(depths):.1f} m"); m4.metric("最低溫度", f"{min_t:.1f} °C"); m5.metric("Max CNS", f"{info['cns_max']} %")
-        b64 = base64.b64encode(d3_plot(p_data, "Free" in st.session_state.nav_mode).encode('utf-8')).decode('utf-8')
-        st.iframe(f"data:text/html;base64,{b64}", height=380)
+        b64_chart = base64.b64encode(d3_interactive_plot(p_data, "Free" in st.session_state.nav_mode).encode('utf-8')).decode('utf-8')
+        st.iframe(f"data:text/html;base64,{b64_chart}", height=380)
 else:
-    st.info("👋 歡迎！請點擊同步或檢查雲端 Firebase 數據。")
+    st.info("👋 歡迎！雲端尚未有任何紀錄，請點擊左側「從手錶連線並同步」。")
