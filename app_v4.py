@@ -263,7 +263,7 @@ if db_index:
     st.sidebar.selectbox("• 日期", sorted(list(db_index[st.session_state.nav_mode].keys()), reverse=True), key="nav_date", on_change=on_date_change)
     available_times = sorted(list(db_index[st.session_state.nav_mode][st.session_state.nav_date].keys()))
     st.sidebar.write(""); st.sidebar.markdown("**• 下潛時間**")
-    t_cont = st.sidebar.container(height=250 if len(available_times) > 4 else None, border=False)
+    t_cont = st.sidebar.container(height=200, border=False)
     with t_cont:
         st.markdown('<div class="time-mask"></div>', unsafe_allow_html=True)
         for t in available_times:
@@ -292,7 +292,6 @@ if sync_btn:
 
 # --- 5. 主畫面展示 ---
 if global_stats and "nav_mode" in st.session_state:
-    st.title("🤿 潛水生涯大數據分析", anchor=False)
     sc, fc = st.columns(2)
     with sc:
         st.markdown("#### 🐠 Scuba Diving")
