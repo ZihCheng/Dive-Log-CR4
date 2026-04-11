@@ -367,7 +367,6 @@ if sync_btn:
 
 # --- 5. 主畫面展示 ---
 if global_stats and "nav_mode" in st.session_state:
-    st.title("🤿 潛水生涯大數據分析", anchor=False)
     sc, fc = st.columns(2)
     with sc:
         st.markdown("#### 🐠 Scuba Diving")
