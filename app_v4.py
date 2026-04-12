@@ -48,7 +48,6 @@ div[data-testid="stExpander"] summary {
     padding-right: 0 !important;
 }
 
-/* === prev/next === */
 /* 只影響左右導航按鈕 */
 div[data-testid="stColumn"]:has(.prev-anchor) button,
 div[data-testid="stColumn"]:has(.next-anchor) button {
@@ -171,7 +170,7 @@ async def sync_from_watch(status_placeholder):
                 st.session_state.bt_session["profile"].clear()
                 offset, profile_len = 0, addr_info[1]
                 if profile_len > 0:
-                    status_placeholder.warning(f"📥 正在下載並上傳第 {dive_index} 潛至資料庫...")
+                    status_placeholder.warning(f"📥 正在下載並上傳第 {dive_index} 潛至 Firebase...")
                     while offset < profile_len:
                         st.session_state.bt_session["event"].clear()
                         await client.write_gatt_char(FFE1_UUID, make_profile_cmd(addr_info[0] + offset, 128), response=False)
@@ -247,16 +246,19 @@ def load_all_data_from_cloud():
             stats[m]["total_sec"] += max(0, sum(len(h) for h in log["profile_hex_list"]) // 2 - 2) // 6 * itv
             stats[m]["max_depth"] = max(stats[m]["max_depth"], log["max_depth"])
     return stats, db_index, flat_logs
-
 def render_plotly_profile_chart(profile_data, is_free: bool):
     df = pd.DataFrame(profile_data).copy()
 
     x_col = "sec" if is_free else "min"
     x_title = "Time (sec)" if is_free else "Time (min)"
 
-    df["time_label"] = df["sec"].apply(lambda s: f"{int(s//60):02d}:{int(s%60):02d}")
+    # 做一個你原本 D3 比較像的時間字串
+    df["time_label"] = df["sec"].apply(
+        lambda s: f"{int(s//60):02d}:{int(s%60):02d}"
+    )
 
     fig = go.Figure()
+
     fig.add_trace(go.Scatter(
         x=df[x_col],
         y=df["depth"],
@@ -265,7 +267,11 @@ def render_plotly_profile_chart(profile_data, is_free: bool):
         fill="tozeroy",
         line=dict(width=2.5, color="steelblue"),
         customdata=df[["temp", "time_label"]],
-        hovertemplate=("<b>%{customdata[1]}</b><br> Depth: %{y:.1f} m<br> <extra></extra>")
+        hovertemplate=(
+            "<b>%{customdata[1]}</b><br>"
+            "Depth: %{y:.1f} m<br>"
+            "<extra></extra>"
+        ),
     ))
 
     fig.add_trace(go.Scatter(
@@ -275,7 +281,10 @@ def render_plotly_profile_chart(profile_data, is_free: bool):
         name=" ",
         yaxis="y2",
         line=dict(width=2, dash="dot", color="indianred"),
-        hovertemplate=("Temp: %{y:.1f} °C<br> <extra></extra>")
+        hovertemplate=(
+            "Temp: %{y:.1f} °C<br>"
+            "<extra></extra>"
+        ),
     ))
 
     fig.update_layout(
@@ -283,17 +292,21 @@ def render_plotly_profile_chart(profile_data, is_free: bool):
         margin=dict(l=10, r=10, t=10, b=10),
         hovermode="x unified",
         showlegend=False,
-        xaxis=dict(title=x_title),
-        yaxis=dict(autorange="reversed"),
-        yaxis2=dict(overlaying="y", side="right"),
-        hoverlabel=dict(bgcolor="white", font_size=14,)
+        xaxis=dict(title=x_title, showgrid=True, gridcolor="rgba(0,0,0,0.2)", griddash="longdash"),
+        yaxis=dict(autorange="reversed",fixedrange=True, showgrid=True, gridcolor="rgba(70,130,180,0.2)", griddash="longdash", tickfont=dict(color="steelblue")),
+        yaxis2=dict(overlaying="y", side="right", fixedrange=True, showgrid=True, gridcolor="rgba(205,92,92,0.2)", griddash="longdash", tickfont=dict(color="indianred")),
+        hoverlabel=dict(bgcolor="white", font_size=14),
+        
     )
-
-    # 鎖定縮放 / 拖曳
-    fig.update_xaxes(fixedrange=True)
-    fig.update_yaxes(fixedrange=True)
-
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
+    st.plotly_chart(
+        fig,
+        width="stretch",
+        config={
+            "displayModeBar": False,
+            "scrollZoom": False,
+            "doubleClick": False
+        }
+    )
 # --- 3. 狀態管理 Callback ---
 def on_mode_change():
     m = st.session_state.nav_mode
@@ -332,71 +345,85 @@ if db_index:
         st.markdown('<div id="time-nav-anchor" class="time-mask"></div>', unsafe_allow_html=True)
         for t in available_times:
             b_type = "primary" if st.session_state.nav_time == t else "secondary"
-            st.button(f"⏱️ {t}", key=f"s_{t}", type=b_type, width="stretch", on_click=set_time, args=(t,))
+            st.button(
+                f"⏱️ {t}",
+                key=f"s_{t}",
+                type=b_type,
+                width="stretch",
+                on_click=set_time,
+                args=(t,)
+            )
     js = f"""
     <script>
     (() => {{
-        const target = "⏱️ {st.session_state.nav_time}";
-        const FLAG = "__time_nav_scroll_running__";
+      const target = "⏱️ {st.session_state.nav_time}";
+      const FLAG = "__time_nav_scroll_running__";
     
-        if (window[FLAG]) return;
-        window[FLAG] = true;
+      if (window[FLAG]) return;
+      window[FLAG] = true;
     
-        function applyMaskAndScroll() {{
-            const root = document;
+      function applyMaskAndScroll() {{
+        const root = document;
     
-            const anchor = root.getElementById("time-nav-anchor");
-            if (!anchor) return false;
+        const anchor = root.getElementById("time-nav-anchor");
+        if (!anchor) return false;
     
-            // 找到包住時間按鈕的區塊
-            const block = anchor.closest('div[data-testid="stVerticalBlock"]');
-            if (!block) return false;
+        // 找到包住時間按鈕的區塊
+        const block = anchor.closest('div[data-testid="stVerticalBlock"]');
+        if (!block) return false;
     
-            // 套遮罩效果
-            block.style.WebkitMaskImage = "linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)";
-            block.style.maskImage = "linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)";
-            block.style.paddingBottom = "20px";
+        // 套遮罩效果
+        block.style.WebkitMaskImage =
+          "linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)";
+        block.style.maskImage =
+          "linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)";
+        block.style.paddingBottom = "20px";
     
-            // 只在這個 block 內找時間按鈕，不掃整個 sidebar
-            const btns = block.querySelectorAll("button");
-            for (const b of btns) {{
-                const txt = (b.innerText || "").trim();
-                if (txt.includes(target)) {{
-                    b.scrollIntoView({{behavior: "smooth", block: "center", inline: "nearest"}});
-                    return true;
-                }}
-            }}
-            return false;
+        // 只在這個 block 內找時間按鈕，不掃整個 sidebar
+        const btns = block.querySelectorAll("button");
+        for (const b of btns) {{
+          const txt = (b.innerText || "").trim();
+          if (txt.includes(target)) {{
+            b.scrollIntoView({{
+              behavior: "smooth",
+              block: "center",
+              inline: "nearest"
+            }});
+            return true;
+          }}
         }}
     
-        let tries = 0;
-        const maxTries = 50;
+        return false;
+      }}
     
-        const timer = setInterval(() => {{
-            tries += 1;
-            const ok = applyMaskAndScroll();
+      let tries = 0;
+      const maxTries = 50;
     
-            if (ok || tries >= maxTries) {{
-                clearInterval(timer);
-                window[FLAG] = false;
-            }}
-        }}, 200);
+      const timer = setInterval(() => {{
+        tries += 1;
+        const ok = applyMaskAndScroll();
     
-        // 額外監聽 sidebar 內容變動，讓 rerun / layout 更新後還能補捲動
-        const sidebar = document.querySelector('[data-testid="stSidebar"]');
-        if (sidebar) {{
-            const observer = new MutationObserver(() => {{
-                applyMaskAndScroll();
-            }});
-    
-            observer.observe(sidebar, {{
-                childList: true,
-                subtree: true
-            }});
-    
-            // 8 秒後自動關閉 observer，避免長期掛著
-            setTimeout(() => observer.disconnect(), 8000);
+        if (ok || tries >= maxTries) {{
+          clearInterval(timer);
+          window[FLAG] = false;
         }}
+      }}, 200);
+    
+      // 額外監聽 sidebar 內容變動，讓 rerun / layout 更新後還能補捲動
+      const sidebar = document.querySelector('[data-testid="stSidebar"]');
+      if (sidebar) {{
+        const observer = new MutationObserver(() => {{
+          applyMaskAndScroll();
+        }});
+    
+        observer.observe(sidebar, {{
+          childList: true,
+          subtree: true
+        }});
+    
+        // 8 秒後自動關閉 observer，避免長期掛著
+        setTimeout(() => observer.disconnect(), 8000);
+      }}
     }})();
     </script>
     """
@@ -452,18 +479,18 @@ if global_stats and "nav_mode" in st.session_state:
         dive_time, max_d, min_t = p_data[-1]['sec'], max(depths), min(d['temp'] for d in p_data)
         
         st.markdown('<div class="chart-nav-wrap">', unsafe_allow_html=True)
+        if "Free" in st.session_state.nav_mode:
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("潛水時長", format_duration(dive_time)); m2.metric("最大深度", f"{max_d:.1f} m"); m3.metric("下潛時間", f"{int(p_data[depths.index(max_d)]['sec'])} 秒"); m4.metric("最低溫度", f"{min_t:.1f} °C")
+        else:
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("潛水時長", format_duration(dive_time)); m2.metric("最大深度", f"{max_d:.1f} m"); m3.metric("平均深度", f"{sum(depths)/len(depths):.1f} m"); m4.metric("最低溫度", f"{min_t:.1f} °C"); m5.metric("Max CNS", f"{info['cns_max']} %")
         nav1, nav2, nav3 = st.columns([1, 12, 1], vertical_alignment="center", gap=None, border=False)
         with nav1:
             st.markdown('<div class="prev-anchor"></div>', unsafe_allow_html=True)
             with st.container(border=False):
                 if idx > 0: st.button(label=" ", icon="◀", key="prev", type="secondary", width="stretch", on_click=navigate_to, args=(curr_list[idx-1]["date"], curr_list[idx-1]["time"]))
         with nav2:
-            if "Free" in st.session_state.nav_mode:
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("潛水時長", format_duration(dive_time)); m2.metric("最大深度", f"{max_d:.1f} m"); m3.metric("下潛時間", f"{int(p_data[depths.index(max_d)]['sec'])} 秒"); m4.metric("最低溫度", f"{min_t:.1f} °C")
-            else:
-                m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("潛水時長", format_duration(dive_time)); m2.metric("最大深度", f"{max_d:.1f} m"); m3.metric("平均深度", f"{sum(depths)/len(depths):.1f} m"); m4.metric("最低溫度", f"{min_t:.1f} °C"); m5.metric("Max CNS", f"{info['cns_max']} %")
             render_plotly_profile_chart(p_data, "Free" in st.session_state.nav_mode)
         with nav3:
             st.markdown('<div class="next-anchor"></div>', unsafe_allow_html=True)
