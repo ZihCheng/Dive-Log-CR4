@@ -3,6 +3,8 @@ import json
 import os
 import asyncio
 import base64
+import pandas as pd
+import plotly.graph_objects as go
 from bleak import BleakClient
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -19,23 +21,31 @@ div[data-baseweb="select"] > div { cursor: pointer !important; }
 div[data-baseweb="select"] input { caret-color: transparent !important; cursor: pointer !important; }
 .aria-hidden, a.header-anchor, [data-testid="stHeaderActionElements"] { display: none !important; }
 
-/* === 🚀 隱形導航按鈕 === */
-[data-testid="column"]:nth-child(1) button, 
-[data-testid="column"]:nth-child(3) button {
-    opacity: 0.1; transition: all 0.3s ease-in-out;
-    border: none !important; background-color: transparent !important;
-    font-size: 1.5rem !important; padding: 0 !important;
-}
-[data-testid="column"]:nth-child(1) button:hover, 
-[data-testid="column"]:nth-child(3) button:hover {
-    opacity: 1; transform: scale(1.2); color: #FF4B4B !important; 
-}
 
 /* === 🎨 更改選中時間的按鈕顏色 === */
 div[data-testid="stVerticalBlock"]:has(.time-mask) button[kind="primary"] {
     background-color: #0083B8 !important;
     border-color: #0083B8 !important;
     color: white !important;
+}
+
+/* === Expander === */
+div[data-testid="stExpander"] {
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+
+div[data-testid="stExpander"] details {
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+}
+
+div[data-testid="stExpander"] summary {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -229,7 +239,82 @@ def d3_interactive_plot(profile_data, is_free):
             }});
     </script></body></html>
     """
+def render_plotly_profile_chart(profile_data, is_free: bool):
+    df = pd.DataFrame(profile_data).copy()
 
+    x_col = "sec" if is_free else "min"
+    x_title = "Time (sec)" if is_free else "Time (min)"
+
+    # 做一個你原本 D3 比較像的時間字串
+    df["time_label"] = df["sec"].apply(
+        lambda s: f"{int(s//60):02d}:{int(s%60):02d}"
+    )
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=df[x_col],
+        y=df["depth"],
+        mode="lines",
+        name=" ",
+        fill="tozeroy",
+        line=dict(width=2.5, color="steelblue"),
+        customdata=df[["temp", "time_label"]],
+        hovertemplate=(
+            "<b>%{customdata[1]}</b><br>"
+            "Depth: %{y:.1f} m<br>"
+            "<extra></extra>"
+        ),
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df[x_col],
+        y=df["temp"],
+        mode="lines",
+        name=" ",
+        yaxis="y2",
+        line=dict(width=2, dash="dot", color="indianred"),
+        hovertemplate=(
+            "Temp: %{y:.1f} °C<br>"
+            "<extra></extra>"
+        ),
+    ))
+
+    fig.update_layout(
+        height=320,
+        margin=dict(l=10, r=10, t=10, b=10),
+        hovermode="x unified",
+        showlegend=False,
+        xaxis=dict(title=x_title),
+        yaxis=dict(
+            title="Depth (m)",
+            autorange="reversed"
+        ),
+        yaxis2=dict(
+            title="Temp (°C)",
+            overlaying="y",
+            side="right"
+        ),
+        hoverlabel=dict(
+            bgcolor="white",
+            font_size=14,
+        ),
+        
+    )
+
+    # 鎖定縮放 / 拖曳
+    fig.update_xaxes(fixedrange=True)
+    fig.update_yaxes(fixedrange=True)
+
+    st.plotly_chart(
+        fig,
+        width="stretch",
+        config={
+            "displayModeBar": False,
+            "scrollZoom": False,
+            "doubleClick": False
+        }
+    )
 # --- 3. 狀態管理 Callback ---
 def on_mode_change():
     m = st.session_state.nav_mode
@@ -272,7 +357,7 @@ if db_index:
                 f"⏱️ {t}",
                 key=f"s_{t}",
                 type=b_type,
-                use_container_width=True,
+                width="stretch",
                 on_click=set_time,
                 args=(t,)
             )
@@ -367,27 +452,6 @@ if sync_btn:
 
 # --- 5. 主畫面展示 ---
 if global_stats and "nav_mode" in st.session_state:
-    st.markdown("""
-    <style>
-    div[data-testid="stExpander"] {
-        border: none !important;
-        box-shadow: none !important;
-        background: transparent !important;
-    }
-    
-    div[data-testid="stExpander"] details {
-        border: none !important;
-        box-shadow: none !important;
-        background: transparent !important;
-        padding: 0 !important;
-    }
-    
-    div[data-testid="stExpander"] summary {
-        padding-left: 0 !important;
-        padding-right: 0 !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
     with st.expander("📈 Summary", expanded=False):
         sc, fc = st.columns(2)
         with sc:
@@ -401,14 +465,9 @@ if global_stats and "nav_mode" in st.session_state:
 
     curr_list = flat_logs[st.session_state.nav_mode]
     idx = next((i for i, l in enumerate(curr_list) if l["date"] == st.session_state.nav_date and l["time"] == st.session_state.nav_time), 0)
-    nav1, nav2, nav3 = st.columns([1, 8, 1])
-    with nav1:
-        if idx > 0: st.button("◀", key="prev", type="tertiary", use_container_width=True, on_click=navigate_to, args=(curr_list[idx-1]["date"], curr_list[idx-1]["time"]))
-    with nav2:
-        e = db_index[st.session_state.nav_mode][st.session_state.nav_date][st.session_state.nav_time]
-        st.markdown(f"<h3 style='text-align: center; margin-top: 0;'>📊 {st.session_state.nav_mode} #{e['num']} | {st.session_state.nav_date} {st.session_state.nav_time}</h3>", unsafe_allow_html=True)
-    with nav3:
-        if idx < len(curr_list)-1: st.button("▶", key="next", type="tertiary", use_container_width=True, on_click=navigate_to, args=(curr_list[idx+1]["date"], curr_list[idx+1]["time"]))
+
+    e = db_index[st.session_state.nav_mode][st.session_state.nav_date][st.session_state.nav_time]
+    st.markdown(f"<h3 style='text-align: center; margin-top: 0;'>📊 {st.session_state.nav_mode} #{e['num']} | {st.session_state.nav_date} {st.session_state.nav_time}</h3>", unsafe_allow_html=True)
 
     # 🚀 直接從雲端資料字典提取內容，完全不依賴 open() 開啟本地檔案
     log_entry = curr_list[idx]["cloud_data"]
@@ -424,15 +483,68 @@ if global_stats and "nav_mode" in st.session_state:
                 sec += itv; raw_bytes = raw_bytes[5:]
     
     if p_data:
+        st.markdown("""
+        <style>
+        /* 只影響左右導航按鈕 */
+        div[data-testid="stColumn"]:has(.prev-anchor) button,
+        div[data-testid="stColumn"]:has(.next-anchor) button {
+            opacity: 0.1;
+            transition: all 0.3s ease-in-out;
+            background-color: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+        
+            /* 讓整條都可點 */
+            height: 380px !important;
+            min-height: 380px !important;
+            padding: 0 !important;
+        
+            display: flex !important;
+            justify-content: center !important;
+            align-items: center !important;
+        }
+        
+        /* hover 時才明顯 */
+        div[data-testid="stColumn"]:has(.prev-anchor) button:hover,
+        div[data-testid="stColumn"]:has(.next-anchor) button:hover {
+            opacity: 1;
+            transform: scale(1.2);
+            color: #555555 !important;
+        }
+        
+        /* 箭頭字體 */
+        div[data-testid="stColumn"]:has(.prev-anchor) button p,
+        div[data-testid="stColumn"]:has(.next-anchor) button p {
+            font-size: 2rem !important;
+            font-weight: 700 !important;
+            line-height: 1 !important;
+            margin: 0 !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
         depths = [d['depth'] for d in p_data]
         dive_time, max_d, min_t = p_data[-1]['sec'], max(depths), min(d['temp'] for d in p_data)
-        if "Free" in st.session_state.nav_mode:
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("潛水時長", format_duration(dive_time)); m2.metric("最大深度", f"{max_d:.1f} m"); m3.metric("下潛時間", f"{int(p_data[depths.index(max_d)]['sec'])} 秒"); m4.metric("最低溫度", f"{min_t:.1f} °C")
-        else:
-            m1, m2, m3, m4, m5 = st.columns(5)
-            m1.metric("潛水時長", format_duration(dive_time)); m2.metric("最大深度", f"{max_d:.1f} m"); m3.metric("平均深度", f"{sum(depths)/len(depths):.1f} m"); m4.metric("最低溫度", f"{min_t:.1f} °C"); m5.metric("Max CNS", f"{info['cns_max']} %")
-        b64_chart = base64.b64encode(d3_interactive_plot(p_data, "Free" in st.session_state.nav_mode).encode('utf-8')).decode('utf-8')
-        st.iframe(f"data:text/html;base64,{b64_chart}", height=380)
+        
+        st.markdown('<div class="chart-nav-wrap">', unsafe_allow_html=True)
+        nav1, nav2, nav3 = st.columns([1, 12, 1], vertical_alignment="center", gap=None, border=False)
+        with nav1:
+            st.markdown('<div class="prev-anchor"></div>', unsafe_allow_html=True)
+            with st.container(border=False):
+                if idx > 0: st.button(label=" ", icon="◀", key="prev", type="secondary", width="stretch", on_click=navigate_to, args=(curr_list[idx-1]["date"], curr_list[idx-1]["time"]))
+        with nav2:
+            if "Free" in st.session_state.nav_mode:
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("潛水時長", format_duration(dive_time)); m2.metric("最大深度", f"{max_d:.1f} m"); m3.metric("下潛時間", f"{int(p_data[depths.index(max_d)]['sec'])} 秒"); m4.metric("最低溫度", f"{min_t:.1f} °C")
+            else:
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("潛水時長", format_duration(dive_time)); m2.metric("最大深度", f"{max_d:.1f} m"); m3.metric("平均深度", f"{sum(depths)/len(depths):.1f} m"); m4.metric("最低溫度", f"{min_t:.1f} °C"); m5.metric("Max CNS", f"{info['cns_max']} %")
+            #b64_chart = base64.b64encode(d3_interactive_plot(p_data, "Free" in st.session_state.nav_mode).encode('utf-8')).decode('utf-8')
+            #st.iframe(f"data:text/html;base64,{b64_chart}", height=380)
+            render_plotly_profile_chart(p_data, "Free" in st.session_state.nav_mode)
+        with nav3:
+            st.markdown('<div class="next-anchor"></div>', unsafe_allow_html=True)
+            with st.container(border=False):
+                if idx < len(curr_list)-1: st.button(label=" ", icon="▶", key="next", type="secondary", width="stretch", on_click=navigate_to, args=(curr_list[idx+1]["date"], curr_list[idx+1]["time"]))
+        st.markdown('</div>', unsafe_allow_html=True)
 else:
     st.info("👋 歡迎！雲端尚未有任何紀錄，請點擊左側「從手錶連線並同步」。")
