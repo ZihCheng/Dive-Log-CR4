@@ -47,6 +47,43 @@ div[data-testid="stExpander"] summary {
     padding-left: 0 !important;
     padding-right: 0 !important;
 }
+
+/* === prev/next === */
+/* 只影響左右導航按鈕 */
+div[data-testid="stColumn"]:has(.prev-anchor) button,
+div[data-testid="stColumn"]:has(.next-anchor) button {
+    opacity: 0.1;
+    transition: all 0.3s ease-in-out;
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+
+    /* 讓整條都可點 */
+    height: 380px !important;
+    min-height: 380px !important;
+    padding: 0 !important;
+
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+}
+
+/* hover 時才明顯 */
+div[data-testid="stColumn"]:has(.prev-anchor) button:hover,
+div[data-testid="stColumn"]:has(.next-anchor) button:hover {
+    opacity: 1;
+    transform: scale(1.2);
+    color: #555555 !important;
+}
+
+/* 箭頭字體 */
+div[data-testid="stColumn"]:has(.prev-anchor) button p,
+div[data-testid="stColumn"]:has(.next-anchor) button p {
+    font-size: 2rem !important;
+    font-weight: 700 !important;
+    line-height: 1 !important;
+    margin: 0 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -134,7 +171,7 @@ async def sync_from_watch(status_placeholder):
                 st.session_state.bt_session["profile"].clear()
                 offset, profile_len = 0, addr_info[1]
                 if profile_len > 0:
-                    status_placeholder.warning(f"📥 正在下載並上傳第 {dive_index} 潛至 Firebase...")
+                    status_placeholder.warning(f"📥 正在下載並上傳第 {dive_index} 潛至資料庫...")
                     while offset < profile_len:
                         st.session_state.bt_session["event"].clear()
                         await client.write_gatt_char(FFE1_UUID, make_profile_cmd(addr_info[0] + offset, 128), response=False)
@@ -211,47 +248,15 @@ def load_all_data_from_cloud():
             stats[m]["max_depth"] = max(stats[m]["max_depth"], log["max_depth"])
     return stats, db_index, flat_logs
 
-def d3_interactive_plot(profile_data, is_free):
-    chart_data = json.dumps(profile_data)
-    time_key = "sec" if is_free else "min"
-    return f"""
-    <!DOCTYPE html><html><head><script src="https://d3js.org/d3.v7.min.js"></script>
-    <style> body {{ margin: 0; font-family: sans-serif; overflow: hidden; }} #data-display {{ text-align: center; height: 24px; color: #666; margin-top:-5px; }} .axis text {{ font-size: 11px; }} </style></head><body>
-    <div id="chart-container"></div><div id="data-display"><i></i></div>
-    <script>
-        const data = {chart_data}, tk = '{time_key}';
-        const container = d3.select("#chart-container"), width = container.node().getBoundingClientRect().width || 1000, height = 340;
-        const margin = {{top:20, right:60, bottom:40, left:60}}, iW = width-margin.left-margin.right, iH = height-margin.top-margin.bottom;
-        const svg = container.append("svg").attr("width",width).attr("height",height).append("g").attr("transform",`translate(${{margin.left}},${{margin.top}})`);
-        const x = d3.scaleLinear().domain(d3.extent(data, d=>d[tk])).range([0,iW]), yD = d3.scaleLinear().domain([0,d3.max(data, d=>d.depth)]).range([0,iH]), yT = d3.scaleLinear().domain([d3.min(data, d=>d.temp)-1, d3.max(data, d=>d.temp)+1]).range([iH,0]);
-        svg.append("g").attr("transform",`translate(0,${{iH}})`).call(d3.axisBottom(x)); svg.append("g").call(d3.axisLeft(yD)); svg.append("g").attr("transform",`translate(${{iW}},0)`).call(d3.axisRight(yT));
-        svg.append("path").datum(data).attr("fill","steelblue").attr("opacity",0.3).attr("d",d3.area().x(d=>x(d[tk])).y0(0).y1(d=>yD(d.depth)).curve(d3.curveMonotoneX));
-        svg.append("path").datum(data).attr("fill","none").attr("stroke","steelblue").attr("stroke-width",2.5).attr("d",d3.line().x(d=>x(d[tk])).y(d=>yD(d.depth)).curve(d3.curveMonotoneX));
-        svg.append("path").datum(data).attr("fill","none").attr("stroke","indianred").attr("stroke-width",2).attr("stroke-dasharray","4,4").attr("d",d3.line().x(d=>x(d[tk])).y(d=>yT(d.temp)).curve(d3.curveMonotoneX));
-        const focus = svg.append("g").style("display","none"); focus.append("line").attr("stroke","#888").attr("stroke-dasharray","4,4").attr("y1",0).attr("y2",iH).attr("id","fL");
-        const fD = focus.append("circle").attr("fill","steelblue").attr("stroke","white").attr("stroke-width",2).attr("r",5), fT = focus.append("circle").attr("fill","indianred").attr("stroke","white").attr("stroke-width",2).attr("r",5);
-        svg.append("rect").attr("width",iW).attr("height",iH).style("fill","none").style("pointer-events","all")
-            .on("mouseover",()=>focus.style("display",null)).on("mousemove",(e)=>{{
-                const x0 = x.invert(d3.pointer(e)[0]), i = d3.bisector(d=>d[tk]).left(data,x0,1), d = x0-data[i-1][tk]>data[i][tk]-x0?data[i]:data[i-1];
-                focus.select("#fL").attr("x1",x(d[tk])).attr("x2",x(d[tk])); fD.attr("cx",x(d[tk])).attr("cy",yD(d.depth)); fT.attr("cx",x(d[tk])).attr("cy",yT(d.temp));
-                const m = Math.floor(d.sec/60).toString().padStart(2,'0'), s = Math.floor(d.sec%60).toString().padStart(2,'0');
-                d3.select("#data-display").html(`<span style="color:#333;font-weight:bold;font-family:monospace;font-size:18px;">${{m}}:${{s}}</span> | Depth: <span style="color:steelblue;font-weight:bold;">${{d.depth.toFixed(1)}}m</span> | Temp: <span style="color:indianred;font-weight:bold;">${{d.temp.toFixed(1)}}&deg;C</span>`);
-            }});
-    </script></body></html>
-    """
 def render_plotly_profile_chart(profile_data, is_free: bool):
     df = pd.DataFrame(profile_data).copy()
 
     x_col = "sec" if is_free else "min"
     x_title = "Time (sec)" if is_free else "Time (min)"
 
-    # 做一個你原本 D3 比較像的時間字串
-    df["time_label"] = df["sec"].apply(
-        lambda s: f"{int(s//60):02d}:{int(s%60):02d}"
-    )
+    df["time_label"] = df["sec"].apply(lambda s: f"{int(s//60):02d}:{int(s%60):02d}")
 
     fig = go.Figure()
-
     fig.add_trace(go.Scatter(
         x=df[x_col],
         y=df["depth"],
@@ -260,11 +265,7 @@ def render_plotly_profile_chart(profile_data, is_free: bool):
         fill="tozeroy",
         line=dict(width=2.5, color="steelblue"),
         customdata=df[["temp", "time_label"]],
-        hovertemplate=(
-            "<b>%{customdata[1]}</b><br>"
-            "Depth: %{y:.1f} m<br>"
-            "<extra></extra>"
-        ),
+        hovertemplate=("<b>%{customdata[1]}</b><br> Depth: %{y:.1f} m<br> <extra></extra>")
     ))
 
     fig.add_trace(go.Scatter(
@@ -274,10 +275,7 @@ def render_plotly_profile_chart(profile_data, is_free: bool):
         name=" ",
         yaxis="y2",
         line=dict(width=2, dash="dot", color="indianred"),
-        hovertemplate=(
-            "Temp: %{y:.1f} °C<br>"
-            "<extra></extra>"
-        ),
+        hovertemplate=("Temp: %{y:.1f} °C<br> <extra></extra>")
     ))
 
     fig.update_layout(
@@ -286,35 +284,16 @@ def render_plotly_profile_chart(profile_data, is_free: bool):
         hovermode="x unified",
         showlegend=False,
         xaxis=dict(title=x_title),
-        yaxis=dict(
-            title="Depth (m)",
-            autorange="reversed"
-        ),
-        yaxis2=dict(
-            title="Temp (°C)",
-            overlaying="y",
-            side="right"
-        ),
-        hoverlabel=dict(
-            bgcolor="white",
-            font_size=14,
-        ),
-        
+        yaxis=dict(autorange="reversed"),
+        yaxis2=dict(overlaying="y", side="right"),
+        hoverlabel=dict(bgcolor="white", font_size=14,)
     )
 
     # 鎖定縮放 / 拖曳
     fig.update_xaxes(fixedrange=True)
     fig.update_yaxes(fixedrange=True)
 
-    st.plotly_chart(
-        fig,
-        width="stretch",
-        config={
-            "displayModeBar": False,
-            "scrollZoom": False,
-            "doubleClick": False
-        }
-    )
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False})
 # --- 3. 狀態管理 Callback ---
 def on_mode_change():
     m = st.session_state.nav_mode
@@ -353,85 +332,71 @@ if db_index:
         st.markdown('<div id="time-nav-anchor" class="time-mask"></div>', unsafe_allow_html=True)
         for t in available_times:
             b_type = "primary" if st.session_state.nav_time == t else "secondary"
-            st.button(
-                f"⏱️ {t}",
-                key=f"s_{t}",
-                type=b_type,
-                width="stretch",
-                on_click=set_time,
-                args=(t,)
-            )
+            st.button(f"⏱️ {t}", key=f"s_{t}", type=b_type, width="stretch", on_click=set_time, args=(t,))
     js = f"""
     <script>
     (() => {{
-      const target = "⏱️ {st.session_state.nav_time}";
-      const FLAG = "__time_nav_scroll_running__";
+        const target = "⏱️ {st.session_state.nav_time}";
+        const FLAG = "__time_nav_scroll_running__";
     
-      if (window[FLAG]) return;
-      window[FLAG] = true;
+        if (window[FLAG]) return;
+        window[FLAG] = true;
     
-      function applyMaskAndScroll() {{
-        const root = document;
+        function applyMaskAndScroll() {{
+            const root = document;
     
-        const anchor = root.getElementById("time-nav-anchor");
-        if (!anchor) return false;
+            const anchor = root.getElementById("time-nav-anchor");
+            if (!anchor) return false;
     
-        // 找到包住時間按鈕的區塊
-        const block = anchor.closest('div[data-testid="stVerticalBlock"]');
-        if (!block) return false;
+            // 找到包住時間按鈕的區塊
+            const block = anchor.closest('div[data-testid="stVerticalBlock"]');
+            if (!block) return false;
     
-        // 套遮罩效果
-        block.style.WebkitMaskImage =
-          "linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)";
-        block.style.maskImage =
-          "linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)";
-        block.style.paddingBottom = "20px";
+            // 套遮罩效果
+            block.style.WebkitMaskImage = "linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)";
+            block.style.maskImage = "linear-gradient(to bottom, transparent 0%, black 15%, black 88%, transparent 100%)";
+            block.style.paddingBottom = "20px";
     
-        // 只在這個 block 內找時間按鈕，不掃整個 sidebar
-        const btns = block.querySelectorAll("button");
-        for (const b of btns) {{
-          const txt = (b.innerText || "").trim();
-          if (txt.includes(target)) {{
-            b.scrollIntoView({{
-              behavior: "smooth",
-              block: "center",
-              inline: "nearest"
+            // 只在這個 block 內找時間按鈕，不掃整個 sidebar
+            const btns = block.querySelectorAll("button");
+            for (const b of btns) {{
+                const txt = (b.innerText || "").trim();
+                if (txt.includes(target)) {{
+                    b.scrollIntoView({{behavior: "smooth", block: "center", inline: "nearest"}});
+                    return true;
+                }}
+            }}
+            return false;
+        }}
+    
+        let tries = 0;
+        const maxTries = 50;
+    
+        const timer = setInterval(() => {{
+            tries += 1;
+            const ok = applyMaskAndScroll();
+    
+            if (ok || tries >= maxTries) {{
+                clearInterval(timer);
+                window[FLAG] = false;
+            }}
+        }}, 200);
+    
+        // 額外監聽 sidebar 內容變動，讓 rerun / layout 更新後還能補捲動
+        const sidebar = document.querySelector('[data-testid="stSidebar"]');
+        if (sidebar) {{
+            const observer = new MutationObserver(() => {{
+                applyMaskAndScroll();
             }});
-            return true;
-          }}
+    
+            observer.observe(sidebar, {{
+                childList: true,
+                subtree: true
+            }});
+    
+            // 8 秒後自動關閉 observer，避免長期掛著
+            setTimeout(() => observer.disconnect(), 8000);
         }}
-    
-        return false;
-      }}
-    
-      let tries = 0;
-      const maxTries = 50;
-    
-      const timer = setInterval(() => {{
-        tries += 1;
-        const ok = applyMaskAndScroll();
-    
-        if (ok || tries >= maxTries) {{
-          clearInterval(timer);
-          window[FLAG] = false;
-        }}
-      }}, 200);
-    
-      // 額外監聽 sidebar 內容變動，讓 rerun / layout 更新後還能補捲動
-      const sidebar = document.querySelector('[data-testid="stSidebar"]');
-      if (sidebar) {{
-        const observer = new MutationObserver(() => {{
-          applyMaskAndScroll();
-        }});
-    
-        observer.observe(sidebar, {{
-          childList: true,
-          subtree: true
-        }});
-    
-        // 8 秒後自動關閉 observer，避免長期掛著
-        setTimeout(() => observer.disconnect(), 8000);
-      }}
     }})();
     </script>
     """
@@ -483,45 +448,6 @@ if global_stats and "nav_mode" in st.session_state:
                 sec += itv; raw_bytes = raw_bytes[5:]
     
     if p_data:
-        st.markdown("""
-        <style>
-        /* 只影響左右導航按鈕 */
-        div[data-testid="stColumn"]:has(.prev-anchor) button,
-        div[data-testid="stColumn"]:has(.next-anchor) button {
-            opacity: 0.1;
-            transition: all 0.3s ease-in-out;
-            background-color: transparent !important;
-            border: none !important;
-            box-shadow: none !important;
-        
-            /* 讓整條都可點 */
-            height: 380px !important;
-            min-height: 380px !important;
-            padding: 0 !important;
-        
-            display: flex !important;
-            justify-content: center !important;
-            align-items: center !important;
-        }
-        
-        /* hover 時才明顯 */
-        div[data-testid="stColumn"]:has(.prev-anchor) button:hover,
-        div[data-testid="stColumn"]:has(.next-anchor) button:hover {
-            opacity: 1;
-            transform: scale(1.2);
-            color: #555555 !important;
-        }
-        
-        /* 箭頭字體 */
-        div[data-testid="stColumn"]:has(.prev-anchor) button p,
-        div[data-testid="stColumn"]:has(.next-anchor) button p {
-            font-size: 2rem !important;
-            font-weight: 700 !important;
-            line-height: 1 !important;
-            margin: 0 !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
         depths = [d['depth'] for d in p_data]
         dive_time, max_d, min_t = p_data[-1]['sec'], max(depths), min(d['temp'] for d in p_data)
         
@@ -538,8 +464,6 @@ if global_stats and "nav_mode" in st.session_state:
             else:
                 m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("潛水時長", format_duration(dive_time)); m2.metric("最大深度", f"{max_d:.1f} m"); m3.metric("平均深度", f"{sum(depths)/len(depths):.1f} m"); m4.metric("最低溫度", f"{min_t:.1f} °C"); m5.metric("Max CNS", f"{info['cns_max']} %")
-            #b64_chart = base64.b64encode(d3_interactive_plot(p_data, "Free" in st.session_state.nav_mode).encode('utf-8')).decode('utf-8')
-            #st.iframe(f"data:text/html;base64,{b64_chart}", height=380)
             render_plotly_profile_chart(p_data, "Free" in st.session_state.nav_mode)
         with nav3:
             st.markdown('<div class="next-anchor"></div>', unsafe_allow_html=True)
