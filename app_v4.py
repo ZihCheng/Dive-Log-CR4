@@ -285,18 +285,16 @@ def render_plotly_profile_chart(profile_data, is_free: bool):
             "Temp: %{y:.1f} °C<br>"
             "<extra></extra>"
         ),
-    ))
-
+    ))  
     fig.update_layout(
         height=320,
         margin=dict(l=10, r=10, t=10, b=10),
         hovermode="x unified",
         showlegend=False,
-        xaxis=dict(title=x_title, showgrid=True, gridcolor="rgba(0,0,0,0.2)", griddash="longdash"),
+        xaxis=dict(title=x_title, fixedrange=True, showgrid=True, gridcolor="rgba(0,0,0,0.2)", griddash="longdash"),
         yaxis=dict(autorange="reversed",fixedrange=True, showgrid=True, gridcolor="rgba(70,130,180,0.2)", griddash="longdash", tickfont=dict(color="steelblue")),
         yaxis2=dict(overlaying="y", side="right", fixedrange=True, showgrid=True, gridcolor="rgba(205,92,92,0.2)", griddash="longdash", tickfont=dict(color="indianred")),
         hoverlabel=dict(bgcolor="white", font_size=14),
-        
     )
     st.plotly_chart(
         fig,
